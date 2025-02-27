@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[25]:
+# In[22]:
 
 
 import torch
@@ -19,7 +19,7 @@ from torchsummary import summary
 
 # 
 
-# In[26]:
+# In[23]:
 
 
 # 调整image size
@@ -37,7 +37,7 @@ print(x.shape)  # torch.Size([1, 3, 224, 224])
 
 # 第一步把image分割为pathces，然后将其flatten, 用einops
 
-# In[27]:
+# In[24]:
 
 
 patch_size=16  # pixels
@@ -47,7 +47,7 @@ print(patches.shape) # (batch, patch数量（224/16）^2, 每一个patch的维�
 
 # 
 
-# In[28]:
+# In[25]:
 
 
 class PatchEmbedding(nn.Module):
@@ -104,7 +104,7 @@ class PatchEmbedding(nn.Module):
 # transformer 在vit中only encoder
 # 
 
-# In[ ]:
+# In[26]:
 
 
 class MultiHeadAttention(nn.Module):
@@ -147,18 +147,23 @@ class MultiHeadAttention(nn.Module):
 
 # 直接用调库
 
-# In[ ]:
+# In[27]:
 
 
 # class MultiHeadAttention(nn.Module):
 #     def __init__(self, emb_size: int = 768, num_heads: int = 8, dropout: float = 0):
 #         super().__init__()
-#         self.emb_size = emb_size
-#         self.num_heads = num_heads
-#         self.attention = nn.MultiheadAttention(embed_dim=emb_size, num_heads=num_heads, dropout=dropout, batch_first=True)
+#         # 利用 PyTorch 内置的 MultiheadAttention 实现多头注意力
+#         self.attention = nn.MultiheadAttention(
+#             embed_dim=emb_size,
+#             num_heads=num_heads,
+#             dropout=dropout,
+#             batch_first=True  # 确保输入输出形状为 (batch, seq, emb)
+#         )
 
-#     def forward(self, x: torch.Tensor, mask: torch.Tensor = None) -> torch.Tensor:
-#         # PyTorch 的 `nn.MultiheadAttention` 需要 `x` 作为 `query, key, value` 的输入
+#     def forward(self, x: Tensor, mask: Tensor = None) -> Tensor:
+#         # 对于 nn.MultiheadAttention, query, key, value 一般均为 x
+#         # 如果提供 mask，则传递给 attn_mask 参数
 #         att_output, _ = self.attention(x, x, x, attn_mask=mask)
 #         return att_output
 
@@ -172,7 +177,7 @@ class MultiHeadAttention(nn.Module):
 
 # Res
 
-# In[31]:
+# In[28]:
 
 
 class ResidualAdd(nn.Module):
@@ -195,7 +200,7 @@ class ResidualAdd(nn.Module):
 
 # MLP
 
-# In[32]:
+# In[29]:
 
 
 class FeedForwardBlock(nn.Sequential):
@@ -220,7 +225,7 @@ class FeedForwardBlock(nn.Sequential):
 
 # Encoder Block组合
 
-# In[33]:
+# In[30]:
 
 
 # class TransformerEncoderBlock(nn.Sequential):
@@ -267,7 +272,7 @@ patches_embedded = PatchEmbedding()(x)
 
 # Encoder
 
-# In[34]:
+# In[31]:
 
 
 class TransformerEncoder(nn.Sequential):
@@ -284,7 +289,7 @@ class TransformerEncoder(nn.Sequential):
 # 分类头
 # 
 
-# In[35]:
+# In[32]:
 
 
 class ClassificationHead(nn.Sequential):
@@ -295,7 +300,7 @@ class ClassificationHead(nn.Sequential):
             nn.Linear(emb_size, n_classes))
 
 
-# In[36]:
+# In[33]:
 
 
 class ViT(nn.Sequential):
@@ -313,4 +318,106 @@ class ViT(nn.Sequential):
             ClassificationHead(emb_size, n_classes)
         )
 print(summary(ViT(), (3, 224, 224), device='cpu'))
+
+
+# In[ ]:
+
+
+from pathlib import Path
+
+
+current_path = Path("vit.ipynb").resolve()
+
+# 获取 `folder1/git/code/` 的上一级目录，即 `folder1/git/`
+root_dir = current_path.parent.parent.parent
+
+# 构建 `folder1/training/` 目录路径
+training_dir = root_dir / "vittraining"
+print(training_dir)
+
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader
+from torchvision import datasets, transforms
+from torch.optim.lr_scheduler import CosineAnnealingLR
+from vit import ViT  # 确保你的 ViT 实现已导入
+
+# ✅ 数据预处理：加入数据增强，提高泛化能力
+transform = transforms.Compose([
+    transforms.RandomHorizontalFlip(),
+    transforms.RandomRotation(15),
+    transforms.RandomResizedCrop(224, scale=(0.8, 1.0)),  # 防止 Patch 过度裁剪
+    transforms.ToTensor(),
+])
+
+# ✅ 加载 CIFAR-10 数据集
+train_dataset = datasets.CIFAR10(root=training_dir, train=True, download=True, transform=transform)
+test_dataset  = datasets.CIFAR10(root=training_dir, train=False, download=True, transform=transforms.ToTensor())
+
+train_loader = DataLoader(train_dataset, batch_size=8, shuffle=True, num_workers=2)  # 降低 batch_size 防止 OOM
+test_loader  = DataLoader(test_dataset, batch_size=8, shuffle=False, num_workers=2)
+
+# ✅ 实例化 ViT 模型（改小 Patch Size）
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Using device: {device}")
+
+model = ViT(
+    in_channels=3,
+    patch_size=8,  # ✅ Patch Size 从 16 降到 8，提高在 CIFAR-10 低分辨率下的学习能力
+    emb_size=768,
+    img_size=224,
+    depth=12,
+    n_classes=10
+).to(device)
+
+# ✅ 使用 AdamW 作为优化器
+optimizer = optim.AdamW(model.parameters(), lr=3e-4, weight_decay=0.01)
+
+# ✅ 使用 CosineAnnealingLR 调度学习率
+scheduler = CosineAnnealingLR(optimizer, T_max=50)  # 50 Epoch 以内 Cosine 退火
+
+# ✅ 定义损失函数
+criterion = nn.CrossEntropyLoss()
+
+# ✅ 训练过程
+def train(model, device, train_loader, optimizer, criterion, epoch):
+    model.train()
+    print(f"Epoch {epoch} 开始训练...")
+    for batch_idx, (data, target) in enumerate(train_loader):
+        data, target = data.to(device), target.to(device)
+        optimizer.zero_grad()
+        output = model(data)
+        loss = criterion(output, target)
+        loss.backward()
+        optimizer.step()
+        
+        # ✅ 每 10 个 Batch 打印一次 Loss
+        if batch_idx % 10 == 0:
+            print(f"Train Epoch: {epoch} [{batch_idx*len(data)}/{len(train_loader.dataset)}] Loss: {loss.item():.6f}")
+
+    scheduler.step()  # ✅ 更新学习率
+
+# ✅ 测试过程
+def test(model, device, test_loader, criterion):
+    model.eval()
+    test_loss = 0.0
+    correct = 0
+    with torch.no_grad():
+        for data, target in test_loader:
+            data, target = data.to(device), target.to(device)
+            output = model(data)
+            test_loss += criterion(output, target).item() * data.size(0)
+            pred = output.argmax(dim=1, keepdim=True)
+            correct += pred.eq(target.view_as(pred)).sum().item()
+    
+    test_loss /= len(test_loader.dataset)
+    accuracy = 100. * correct / len(test_loader.dataset)
+    print(f"\nTest set: Average loss: {test_loss:.4f}, Accuracy: {correct}/{len(test_loader.dataset)} ({accuracy:.0f}%)\n")
+
+# ✅ 训练循环（扩展到 50 Epoch）
+num_epochs = 50
+for epoch in range(1, num_epochs + 1):
+    train(model, device, train_loader, optimizer, criterion, epoch)
+    test(model, device, test_loader, criterion)
 
